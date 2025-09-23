@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sistema de Riego Automatizado - Multi Arduino v2.0</title>
+    
+    <!-- Chart.js para gráficas -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+    
+    <!-- Cargar CSS externo -->
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🌱 Sistema de Riego Automatizado Multi-Arduino v2.0</h1>
+            <p>Monitoreo y Control Inteligente con Parámetros Configurables</p>
+        </div>
+
+        <!-- Configuración de Parámetros -->
+        <div class="config-section">
+            <h3>⚙️ Configuración de Parámetros del Sistema</h3>
+            <div class="config-grid">
+                <!-- Configuración de Gas -->
+                <div class="config-card">
+                    <div class="config-title">🔥 Parámetros de Gas</div>
+                    <div class="param-input-group">
+                        <label>Nivel Bueno (máximo):</label>
+                        <input type="number" id="gasGoodMax" value="30" min="0" max="1000">
+                    </div>
+                    <div class="param-input-group">
+                        <label>Nivel Regular (máximo):</label>
+                        <input type="number" id="gasRegularMax" value="100" min="0" max="1000">
+                    </div>
+                    <div class="param-input-group">
+                        <label>Nivel Malo (máximo):</label>
+                        <input type="number" id="gasBadMax" value="150" min="0" max="1000">
+                    </div>
+                    <button class="btn" onclick="updateGasParameters()">Actualizar Gas</button>
+                    
+                    <div class="param-display" id="gasParametersDisplay">
+                        <strong>Parámetros de Gas:</strong><br>
+                        🟢 Bueno: 0 - 30<br>
+                        🟡 Regular: 31 - 100<br>
+                        🟠 Malo: 101 - 150<br>
+                        🔴 Peligroso: 151+
+                    </div>
+                </div>
+
+                <!-- Configuración de Ultrasonido -->
+                <div class="config-card">
+                    <div class="config-title">📏 Parámetros de Ultrasonido</div>
+                    <div class="param-input-group">
+                        <label>Nivel Mínimo (máximo cm):</label>
+                        <input type="number" id="ultraMinMax" value="5" min="0" max="100">
+                    </div>
+                    <div class="param-input-group">
+                        <label>Nivel Regular (máximo cm):</label>
+                        <input type="number" id="ultraRegularMax" value="15" min="0" max="100">
+                    </div>
+                    <div class="param-input-group">
+                        <label>Nivel Máximo (máximo cm):</label>
+                        <input type="number" id="ultraMaxMax" value="25" min="0" max="100">
+                    </div>
+                    <button class="btn" onclick="updateUltrasonicParameters()">Actualizar Ultrasonido</button>
+                    
+                    <div class="param-display" id="ultraParametersDisplay">
+                        <strong>Parámetros de Ultrasonido:</strong><br>
+                        🔴 Mínimo (Vacío): 0 - 5 cm<br>
+                        🟡 Regular: 6 - 15 cm<br>
+                        🟢 Máximo (Lleno): 16 - 25 cm<br>
+                        ⚠️ Desborde: 26+ cm
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Sección de Conexión Arduino -->
+        <div class="connection-section">
+            <h3>🔌 Conexiones Arduino</h3>
+            <div class="connection-grid">
+                <!-- Arduino de Sensores -->
+                <div class="arduino-card" id="sensorsArduino">
+                    <div class="arduino-title">
+                        🌡️ Arduino Sensores
+                        <span class="connection-status" id="sensorsStatus">⚪ Desconectado</span>
+                    </div>
+                    <div class="input-group">
+                        <label>Baud Rate:</label>
+                        <select id="sensorsBaud">
+                            <option value="9600" selected>9600</option>
+                            <option value="115200">115200</option>
+                        </select>
+                    </div>
+                    <button class="btn" id="connectSensors" onclick="connectSensorsArduino()">Conectar Sensores</button>
+                    <button class="btn btn-danger" id="disconnectSensors" onclick="disconnectSensorsArduino()" disabled>Desconectar</button>
+                    
+                    <div class="connection-log" id="sensorsLog">Esperando conexión...</div>
+                    <div class="data-display" id="sensorsData">Sin datos de sensores</div>
+                </div>
+
+                <!-- Arduino de Bomba -->
+                <div class="arduino-card" id="pumpArduino">
+                    <div class="arduino-title">
+                        💧 Arduino Bomba
+                        <span class="connection-status" id="pumpStatus">⚪ Desconectado</span>
+                    </div>
+                    <div class="input-group">
+                        <label>Baud Rate:</label>
+                        <select id="pumpBaud">
+                            <option value="9600" selected>9600</option>
+                            <option value="115200">115200</option>
+                        </select>
+                    </div>
+                    <button class="btn" id="connectPump" onclick="connectPumpArduino()">Conectar Bomba</button>
+                    <button class="btn btn-danger" id="disconnectPump" onclick="disconnectPumpArduino()" disabled>Desconectar</button>
+                    
+                    <div class="connection-log" id="pumpLog">Esperando conexión...</div>
+                    <div class="data-display" id="pumpData">Sin datos de bomba</div>
+                </div>
+            </div>
+            
+            <div style="text-align: center; margin-top: 20px;">
+                <button class="btn btn-info" onclick="connectAllArduinos()">🔗 Conectar Ambos</button>
+                <button class="btn btn-warning" onclick="disconnectAllArduinos()">❌ Desconectar Todo</button>
+                <button class="btn" onclick="testConnections()">🧪 Probar Conexiones</button>
+            </div>
+        </div>
+
+        <!-- Estado Actual de Sensores -->
+        <div class="status-grid">
+            <div class="status-card normal" id="gasCard">
+                <div class="status-header">
+                    <span class="status-title">🔥 Sensor de Gas</span>
+                    <span class="status-icon">✅</span>
+                </div>
+                <div class="status-value" id="gasValue">0</div>
+                <div class="status-description" id="gasStatus">🟢 Normal - Sin detección</div>
+            </div>
+
+            <div class="status-card normal" id="ultrasonicCard">
+                <div class="status-header">
+                    <span class="status-title">📏 Nivel de Tanque</span>
+                    <span class="status-icon">📊</span>
+                </div>
+                <div class="status-value" id="ultrasonicValue">0 cm</div>
+                <div class="status-description" id="ultrasonicStatus">❌ Sin datos del sensor</div>
+            </div>
+
+            <div class="status-card normal" id="soilCard">
+                <div class="status-header">
+                    <span class="status-title">🌱 Humedad del Suelo</span>
+                    <span class="status-icon">💧</span>
+                </div>
+                <div class="status-value" id="soilValue">0%</div>
+                <div class="status-description" id="soilStatus">Sin datos del sensor</div>
+            </div>
+
+            <div class="status-card normal" id="tempCard">
+                <div class="status-header">
+                    <span class="status-title">🌡️ Temperatura</span>
+                    <span class="status-icon">🌡️</span>
+                </div>
+                <div class="status-value" id="tempValue">0°C</div>
+                <div class="status-description" id="tempStatus">Sin datos</div>
+            </div>
+
+            <div class="status-card normal" id="humidCard">
+                <div class="status-header">
+                    <span class="status-title">💨 Humedad del Aire</span>
+                    <span class="status-icon">🌫️</span>
+                </div>
+                <div class="status-value" id="humidValue">0%</div>
+                <div class="status-description" id="humidStatus">Sin datos</div>
+            </div>
+        </div>
+
+        <!-- Configuración de Plantas de Ecuador -->
+        <div class="plant-selector">
+            <h3>🇪🇨 Configuración de Plantas del Ecuador</h3>
+            <div class="controls-grid">
+                <div class="control-group">
+                    <h4>Seleccionar Planta por Región</h4>
+                    <div class="input-group">
+                        <label>Planta:</label>
+                        <select id="plantSelect">
+                            <option value="">Seleccionar planta...</option>
+                            <optgroup label="🍇 Frutas Tropicales">
+                                <option value="mango">🥭 Mango</option>
+                                <option value="banano">🍌 Banano</option>
+                                <option value="cacao">🍫 Cacao</option>
+                                <option value="platano">🍌 Plátano</option>
+                                <option value="maracuya">🥤 Maracuyá</option>
+                            </optgroup>
+                            <optgroup label="🍊 Cítricos">
+                                <option value="naranja">🍊 Naranja</option>
+                                <option value="limon">🍋 Limón</option>
+                            </optgroup>
+                            <optgroup label="🏔️ Frutas de la Sierra">
+                                <option value="fresa">🍓 Fresa</option>
+                                <option value="mora">🫐 Mora</option>
+                            </optgroup>
+                            <optgroup label="🥗 Hortalizas">
+                                <option value="tomate">🍅 Tomate</option>
+                                <option value="lechuga">🥬 Lechuga</option>
+                            </optgroup>
+                            <optgroup label="🥔 Tubérculos">
+                                <option value="papa">🥔 Papa</option>
+                            </optgroup>
+                            <optgroup label="🌿 Aromáticas">
+                                <option value="albahaca">🌿 Albahaca</option>
+                                <option value="oregano">🌿 Orégano</option>
+                            </optgroup>
+                            <optgroup label="💊 Medicinales">
+                                <option value="hierba_buena">🌱 Hierba Buena</option>
+                            </optgroup>
+                            <optgroup label="🌹 Ornamentales">
+                                <option value="rosa">🌹 Rosa</option>
+                            </optgroup>
+                            <optgroup label="🌵 Cactáceas">
+                                <option value="cactus">🌵 Cactus</option>
+                            </optgroup>
+                            <option value="custom">➕ Agregar Nueva...</option>
+                        </select>
+                    </div>
+                    <div class="input-group">
+                        <label>Región del Ecuador:</label>
+                        <select id="regionSelect">
+                            <option value="costa">🏖️ Costa (0-1000m)</option>
+                            <option value="sierra">⛰️ Sierra (1000-3500m)</option>
+                            <option value="oriente">🌿 Oriente Amazónico</option>
+                        </select>
+                    </div>
+                    <div id="customPlantInput" style="display: none;">
+                        <div class="input-group">
+                            <label>Nombre de la planta:</label>
+                            <input type="text" id="customPlantName" placeholder="Ej: Albahaca morada">
+                        </div>
+                    </div>
+                    <div style="text-align: center;">
+                        <button class="btn" onclick="selectPlantEcuador()">🌱 Aplicar Planta</button>
+                        <button class="btn btn-info" onclick="showPlantGlossary()">📖 Ver Glosario Completo</button>
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <h4>Parámetros Personalizados (Opcional)</h4>
+                    <div class="input-group">
+                        <label>Humedad del Suelo Óptima (%):</label>
+                        <input type="number" id="soilOptimal" min="0" max="100" value="50">
+                    </div>
+                    <div class="input-group">
+                        <label>Humedad Mínima (%):</label>
+                        <input type="number" id="soilMin" min="0" max="100" value="25">
+                    </div>
+                    <div class="input-group">
+                        <label>Humedad Máxima (%):</label>
+                        <input type="number" id="soilMax" min="0" max="100" value="75">
+                    </div>
+                    <div class="input-group">
+                        <label>Temperatura Óptima (°C):</label>
+                        <input type="number" id="tempOptimal" min="0" max="50" value="25">
+                    </div>
+                    <div class="input-group">
+                        <label>Humedad del Aire Óptima (%):</label>
+                        <input type="number" id="humidOptimal" min="0" max="100" value="60">
+                    </div>
+                    <button class="btn" onclick="updateParameters()">⚙️ Actualizar Parámetros</button>
+                </div>
+            </div>
+            
+            <!-- Información de la planta seleccionada -->
+            <div id="plantInfoDisplay" style="margin-top: 20px;">
+                <div class="plant-info-card">
+                    <h4>ℹ️ Información de la Planta</h4>
+                    <p>Selecciona una planta y región para ver información detallada sobre sus requerimientos específicos para Ecuador.</p>
+                </div>
+            </div>
+
+            <!-- Parámetros actuales -->
+            <div id="currentParameters" style="margin-top: 20px; padding: 15px; background: #e8f5e8; border-radius: 10px; border-left: 4px solid #4CAF50;">
+                <strong>Parámetros Actuales:</strong><br>
+                Humedad Suelo: 25% - 75%<br>
+                Temperatura Óptima: 25°C<br>
+                Humedad Aire Óptima: 60%
+            </div>
+        </div>
+
+        <!-- Control de Bomba -->
+        <div class="pump-control">
+            <h3>💧 Control de Bomba de Riego</h3>
+            <div class="pump-status" id="pumpStatusDisplay">
+                Estado: <span id="pumpState">Desactivada</span>
+            </div>
+            <button class="btn pump-btn" id="pumpBtn" onclick="togglePump()">
+                🔴 Activar Bomba
+            </button>
+            <div style="margin-top: 15px;">
+                <button class="btn btn-info" onclick="autoMode()">🤖 Modo Automático</button>
+                <button class="btn btn-warning" onclick="manualMode()">👤 Modo Manual</button>
+            </div>
+            <div id="autoModeStatus" style="margin-top: 10px; font-weight: bold; color: #4CAF50;">
+                Modo: Manual
+            </div>
+        </div>
+
+        <!-- Gráficas -->
+        <div class="charts-section">
+            <h3>📊 Gráficas en Tiempo Real</h3>
+            <div class="charts-grid">
+                <div class="chart-container">
+                    <div class="chart-title">Sensores en Tiempo Real</div>
+                    <canvas id="sensorsChart" style="height: 300px;"></canvas>
+                </div>
+                <div class="chart-container">
+                    <div class="chart-title">Estados de Alerta</div>
+                    <canvas id="alertsChart" style="height: 300px;"></canvas>
+                </div>
+                <div class="chart-container">
+                    <div class="chart-title">Historial de Gas (Configurable)</div>
+                    <canvas id="gasChart" style="height: 300px;"></canvas>
+                </div>
+                <div class="chart-container">
+                    <div class="chart-title">Nivel Ultrasonido (Configurable)</div>
+                    <canvas id="ultraChart" style="height: 300px;"></canvas>
+                </div>
+                <div class="chart-container">
+                    <div class="chart-title">Historial de Riego</div>
+                    <canvas id="irrigationChart" style="height: 300px;"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- Estadísticas -->
+        <div class="statistics">
+            <h3>📈 Estadísticas del Sistema</h3>
+            <div class="stats-grid">
+                <div class="stat-item">
+                    <div class="stat-value" id="totalReadings">0</div>
+                    <div class="stat-label">Lecturas Totales</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value" id="alertCount">0</div>
+                    <div class="stat-label">Alertas Generadas</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value" id="irrigationCount">0</div>
+                    <div class="stat-label">Riegos Realizados</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value" id="uptime">0h</div>
+                    <div class="stat-label">Tiempo Activo</div>
+                </div>
+                <!-- Estadísticas de alertas por tipo -->
+                <div class="stat-item">
+                    <div class="stat-value" id="gasGoodCount" style="color: #4CAF50;">0</div>
+                    <div class="stat-label">Lecturas Buenas</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value" id="gasRegularCount" style="color: #FF9800;">0</div>
+                    <div class="stat-label">Lecturas Regulares</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value" id="gasBadCount" style="color: #F44336;">0</div>
+                    <div class="stat-label">Lecturas Malas</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value" id="gasDangerCount" style="color: #E91E63;">0</div>
+                    <div class="stat-label">Lecturas Peligrosas</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Botones de Control -->
+        <div class="controls-section">
+            <h3>⚙️ Controles del Sistema</h3>
+            <div style="text-align: center;">
+                <button class="btn" id="resetBtn" onclick="resetSensors()">🔄 Resetear Sensores</button>
+                <button class="btn btn-warning" id="clearBtn" onclick="clearData()">🗑️ Limpiar Datos</button>
+                <button class="btn btn-info" id="exportBtn" onclick="exportData()">📊 Exportar Datos</button>
+                <button class="btn btn-danger" id="emergencyBtn" onclick="emergencyStop()">🚨 Parada de Emergencia</button>
+            </div>
+            
+            <!-- Importar datos -->
+            <div style="text-align: center; margin-top: 15px;">
+                <label for="importFile" class="btn" style="cursor: pointer;">📂 Importar Datos</label>
+                <input type="file" id="importFile" accept=".json" style="display: none;">
+            </div>
+        </div>
+    </div>
+
+    <!-- CARGAR EL JAVASCRIPT AL FINAL -->
+    <script src="/web.js"></script>
+</body>
+</html>
