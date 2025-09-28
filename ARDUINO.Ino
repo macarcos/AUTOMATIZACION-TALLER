@@ -1,486 +1,356 @@
-// ARDUINO BOMBA - Control Dual USB Serial + Bluetooth v2.3
-// Pines: Pin 7 = Relay, Pin 3 = Botón emergencia, Pin 11 = Buzzer
-// Bluetooth: Pin 2 = RX, Pin 8 = TX (SoftwareSerial)
+// SISTEMA COMPLETO MEJORADO - Compatible con Web App v2.0
+// Sensores: MQ-135 (Gas), DHT11 (Temp/Hum), HC-SR04 (Distancia), YL-69 (Suelo), Buzzer
 
-#include <SoftwareSerial.h>
+#include <DHT.h>
 
-// ===== CONFIGURACIÓN DE PINES =====
-#define RELAY_PIN 7        // Pin IN1 del relay
-#define BOTON_EMERGENCIA 3 // Botón físico de emergencia
-#define BUZZER_PIN 11      // Buzzer para confirmación
-#define BT_RX_PIN 2        // Pin RX del Bluetooth (conectar a TX del módulo)
-#define BT_TX_PIN 8        // Pin TX del Bluetooth (conectar a RX del módulo)
+// Configuración DHT11
+#define DHT_PIN 3
+#define DHT_TYPE DHT11
+DHT dht(DHT_PIN, DHT_TYPE);
 
-// ===== CONFIGURACIÓN BLUETOOTH =====
-SoftwareSerial bluetooth(BT_RX_PIN, BT_TX_PIN);
+// Configuración Sensor Ultrasónico HC-SR04
+#define TRIG_PIN 4
+#define ECHO_PIN 5
 
-// ===== CONFIGURACIÓN RELAY =====
-const bool RELAY_ACTIVE_HIGH = false; // Ajustar según tu relay
+// Configuración Sensor Humedad Suelo YL-69
+#define SOIL_PIN A1
 
-// ===== VARIABLES DE CONTROL =====
-bool bombaActiva = false;
-bool botonAnterior = HIGH;
-unsigned long ultimoDebounce = 0;
-const unsigned long DEBOUNCE_DELAY = 50;
+// Configuración Buzzer
+#define BUZZER_PIN 6
 
-// Control de tiempos
-unsigned long tiempoInicioBomba = 0;
-const unsigned long TIEMPO_MAXIMO = 300000; // 5 minutos máximo
-unsigned long ultimoEnvioEstado = 0;
-unsigned long ultimoEnvioBluetoothStatus = 0;
+// Configuración MQ-135 GAS SENSOR
+const int mq135Pin = A0;
+int valorReferencia = 0;
+int lecturaActual = 0;
 
-// Estadísticas
-int vecesActivada = 0;
-int vecesEmergencia = 0;
-unsigned long tiempoTotalFuncionamiento = 0;
+// Variables para detección y control
+bool gasDetectado = false;
+int historialGas[5];
+int indiceHistorial = 0;
+unsigned long ultimaLecturaDHT = 0;
+unsigned long ultimoEnvio = 0;
+const unsigned long INTERVALO_ENVIO = 1000; // Enviar datos cada 1 segundo
 
-// Control de fuentes de comando
-String ultimaFuenteComando = "NINGUNA";
-bool comandoDesdeApp = false;
-bool comandoDesdeBluetooth = false;
+// Variables para control de buzzer (alertas locales)
+unsigned long inicioAlarmaSuelo = 0;
+unsigned long inicioAlarmaGas = 0;
+unsigned long inicioAlarmaDistancia = 0;
+bool alarmaSueloActiva = false;
+bool alarmaGasActiva = false;
+bool alarmaDistanciaActiva = false;
 
 void setup() {
-    Serial.begin(9600);           // Comunicación USB con la web app
-    bluetooth.begin(9600);        // Comunicación Bluetooth con móvil
-    
-    // Configurar pines
-    pinMode(RELAY_PIN, OUTPUT);
-    pinMode(BOTON_EMERGENCIA, INPUT_PULLUP);
-    pinMode(BUZZER_PIN, OUTPUT);
-    
-    // ESTADO INICIAL SEGURO
-    forzarBombaOFF();
-    bombaActiva = false;
-    
-    // Mensajes de inicio para ambas conexiones
-    enviarMensajeInicio();
-    
-    // Test inicial del sistema
-    testInicial();
-    
-    Serial.println(F("✅ Sistema dual listo (USB + Bluetooth)"));
-    bluetooth.println(F("Sistema bomba dual listo!"));
-    bluetooth.println(F("Comandos: ON, OFF, STATUS"));
-    
-    // Confirmación sonora
-    beep(2); // 2 beeps = sistema dual activo
-    
-    mostrarStatus();
+  Serial.begin(9600);
+  dht.begin();
+  
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(BUZZER_PIN, LOW);
+  
+  Serial.println(F("╔══════════════════════════════════╗"));
+  Serial.println(F("║  SISTEMA RIEGO v2.0 - ARDUINO   ║"));
+  Serial.println(F("║    Compatible con Web App        ║"));
+  Serial.println(F("╚══════════════════════════════════╝"));
+  
+  Serial.println(F("🔥 Precalentando MQ-135 (10s)..."));
+  delay(10000);
+  
+  calibrarSensorGas();
+  probarTodosSensores();
+  
+  Serial.println(F("✅ Sistema listo - Enviando datos JSON"));
+  Serial.println(F("================================================"));
 }
 
 void loop() {
-    // 1. ALTA PRIORIDAD: Botón de emergencia
-    verificarBotonEmergencia();
+  unsigned long tiempoActual = millis();
+  
+  // Leer sensores con frecuencia adecuada
+  int gasValue = leerGasPromedio();
+  float distancia = leerDistancia();
+  int humedadSuelo = leerHumedadSuelo();
+  
+  // Leer DHT11 cada 2 segundos (es lento)
+  static float temperatura = 0;
+  static float humedad = 0;
+  if(tiempoActual - ultimaLecturaDHT > 2000) {
+    float tempTemp = dht.readTemperature();
+    float tempHum = dht.readHumidity();
     
-    // 2. Verificar tiempo máximo
-    verificarTiempoMaximo();
-    
-    // 3. Procesar comandos USB Serial (web app)
-    if (Serial.available()) {
-        String comando = Serial.readStringUntil('\n');
-        procesarComando(comando, "WEB_APP");
+    if(!isnan(tempTemp) && !isnan(tempHum)) {
+      temperatura = tempTemp;
+      humedad = tempHum;
     }
-    
-    // 4. Procesar comandos Bluetooth (móvil)
-    if (bluetooth.available()) {
-        String comando = bluetooth.readStringUntil('\n');
-        procesarComando(comando, "BLUETOOTH");
-    }
-    
-    // 5. Enviar estado a web app cada 5 segundos
-    if (millis() - ultimoEnvioEstado >= 5000) {
-        enviarEstadoWebApp();
-        ultimoEnvioEstado = millis();
-    }
-    
-    // 6. Enviar estado a Bluetooth cada 10 segundos
-    if (millis() - ultimoEnvioBluetoothStatus >= 10000) {
-        enviarEstadoBluetooth();
-        ultimoEnvioBluetoothStatus = millis();
-    }
-    
+    ultimaLecturaDHT = tiempoActual;
+  }
+  
+  // Controlar buzzer para alertas locales
+  controlarBuzzerLocal(gasValue, distancia, humedadSuelo);
+  
+  // Enviar datos a la web app cada segundo
+  if(tiempoActual - ultimoEnvio >= INTERVALO_ENVIO) {
+    enviarDatosWeb(gasValue, distancia, humedadSuelo, temperatura, humedad);
+    ultimoEnvio = tiempoActual;
+  }
+  
+  delay(300); // Lectura rápida pero no excesiva
+}
+
+void calibrarSensorGas() {
+  Serial.println(F("⚖️ Calibrando MQ-135..."));
+  
+  long suma = 0;
+  for(int i = 0; i < 50; i++) {
+    suma += analogRead(mq135Pin);
+    delay(100);
+    if(i % 10 == 0) Serial.print(F("."));
+  }
+  
+  valorReferencia = suma / 50;
+  
+  // Inicializar historial
+  for(int i = 0; i < 5; i++) {
+    historialGas[i] = valorReferencia;
+  }
+  
+  Serial.println();
+  Serial.print(F("🎯 Valor de referencia: "));
+  Serial.println(valorReferencia);
+}
+
+int leerGasPromedio() {
+  long suma = 0;
+  for(int i = 0; i < 3; i++) {
+    suma += analogRead(mq135Pin);
     delay(10);
+  }
+  
+  int promedio = suma / 3;
+  
+  // Agregar al historial
+  historialGas[indiceHistorial] = promedio;
+  indiceHistorial = (indiceHistorial + 1) % 5;
+  
+  return promedio;
 }
 
-// ===== ENVÍO DE MENSAJES DE INICIO =====
-void enviarMensajeInicio() {
-    // Mensaje para USB Serial (Web App)
-    Serial.println(F("╔══════════════════════════════════╗"));
-    Serial.println(F("║  BOMBA DUAL v2.3 - WEB + BT     ║"));
-    Serial.println(F("║     INICIO SEGURO - OFF          ║"));
-    Serial.println(F("╚══════════════════════════════════╝"));
+float leerDistancia() {
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+  
+  long duracion = pulseIn(ECHO_PIN, HIGH, 30000); // Timeout de 30ms
+  
+  if(duracion == 0) {
+    return -1; // Error en lectura
+  }
+  
+  float distancia = (duracion * 0.034) / 2;
+  
+  if(distancia > 400 || distancia < 2) {
+    return -1;
+  }
+  
+  return distancia;
+}
+
+int leerHumedadSuelo() {
+  int valorSuelo = analogRead(SOIL_PIN);
+  
+  // Mapear a porcentaje: 0% = muy seco, 100% = muy húmedo
+  // Ajustar estos valores según tu sensor específico
+  int porcentajeHumedad = map(valorSuelo, 1023, 300, 0, 100);
+  
+  if(porcentajeHumedad < 0) porcentajeHumedad = 0;
+  if(porcentajeHumedad > 100) porcentajeHumedad = 100;
+  
+  return porcentajeHumedad;
+}
+
+void enviarDatosWeb(int gas, float ultra, int suelo, float temp, float hum) {
+  // FORMATO JSON para la web app
+  Serial.print(F("{"));
+  Serial.print(F("\"gas\":"));
+  Serial.print(gas);
+  Serial.print(F(",\"ultrasonic\":"));
+  
+  if(ultra < 0) {
+    Serial.print(F("0"));
+  } else {
+    Serial.print(ultra, 1);
+  }
+  
+  Serial.print(F(",\"soil\":"));
+  Serial.print(suelo);
+  Serial.print(F(",\"temperature\":"));
+  Serial.print(temp, 1);
+  Serial.print(F(",\"humidity\":"));
+  Serial.print(hum, 1);
+  Serial.print(F(",\"timestamp\":"));
+  Serial.print(millis());
+  Serial.println(F("}"));
+  
+  // TAMBIÉN enviar formato legible para debugging
+  Serial.print(F("DEBUG: Gas="));
+  Serial.print(gas);
+  Serial.print(F(" | Ultra="));
+  if(ultra < 0) {
+    Serial.print(F("ERROR"));
+  } else {
+    Serial.print(ultra, 1);
+    Serial.print(F("cm"));
+  }
+  Serial.print(F(" | Suelo="));
+  Serial.print(suelo);
+  Serial.print(F("% | Temp="));
+  Serial.print(temp, 1);
+  Serial.print(F("°C | Hum="));
+  Serial.print(hum, 1);
+  Serial.println(F("%"));
+}
+
+void controlarBuzzerLocal(int gasValue, float distancia, int humedadSuelo) {
+  unsigned long tiempoActual = millis();
+  
+  // Evaluar condiciones críticas
+  int cambioGas = abs(gasValue - valorReferencia);
+  bool gasCritico = (cambioGas >= 50);
+  bool distanciaCritica = (distancia > 0 && distancia < 5) || distancia > 30;
+  bool sueloMuySeco = (humedadSuelo < 20);
+  
+  // ALARMA DE GAS (máxima prioridad)
+  if(gasCritico) {
+    if(!alarmaGasActiva) {
+      alarmaGasActiva = true;
+      inicioAlarmaGas = tiempoActual;
+    }
+    // Pitido rápido continuo
+    digitalWrite(BUZZER_PIN, (tiempoActual % 300) < 150 ? HIGH : LOW);
+  } else {
+    if(alarmaGasActiva) {
+      alarmaGasActiva = false;
+      digitalWrite(BUZZER_PIN, LOW);
+    }
+  }
+  
+  // ALARMA DE DISTANCIA (solo si no hay alarma de gas)
+  if(distanciaCritica && !gasCritico) {
+    if(!alarmaDistanciaActiva) {
+      alarmaDistanciaActiva = true;
+      inicioAlarmaDistancia = tiempoActual;
+    }
     
-    // Mensaje para Bluetooth (Móvil)
-    bluetooth.println(F("============================="));
-    bluetooth.println(F("  BOMBA RIEGO v2.3 - MOVIL  "));
-    bluetooth.println(F("   Conectado via Bluetooth   "));
-    bluetooth.println(F("============================="));
-    bluetooth.println(F("Estado: BOMBA APAGADA"));
-    bluetooth.println(F(""));
-    bluetooth.println(F("Comandos disponibles:"));
-    bluetooth.println(F("ON    - Encender bomba"));
-    bluetooth.println(F("OFF   - Apagar abomba"));
-    bluetooth.println(F("STATUS - Ver estado"));
-    bluetooth.println(F("HELP   - Ayuda"));
-    bluetooth.println(F("============================="));
+    // Sonar por 2 segundos
+    if(tiempoActual - inicioAlarmaDistancia < 2000) {
+      digitalWrite(BUZZER_PIN, (tiempoActual % 500) < 250 ? HIGH : LOW);
+    } else {
+      digitalWrite(BUZZER_PIN, LOW);
+      alarmaDistanciaActiva = false;
+    }
+  } else if(!distanciaCritica) {
+    alarmaDistanciaActiva = false;
+  }
+  
+  // ALARMA DE SUELO (solo si no hay otras alarmas)
+  if(sueloMuySeco && !gasCritico && !alarmaDistanciaActiva) {
+    if(!alarmaSueloActiva) {
+      alarmaSueloActiva = true;
+      inicioAlarmaSuelo = tiempoActual;
+    }
+    // Pitido lento
+    digitalWrite(BUZZER_PIN, (tiempoActual % 1500) < 200 ? HIGH : LOW);
+  } else {
+    if(alarmaSueloActiva && !sueloMuySeco) {
+      alarmaSueloActiva = false;
+      digitalWrite(BUZZER_PIN, LOW);
+    }
+  }
 }
 
-// ===== PROCESAMIENTO DE COMANDOS UNIFICADO =====
-void procesarComando(String comando, String fuente) {
+void probarTodosSensores() {
+  Serial.println(F("🧪 Probando todos los sensores..."));
+  
+  // Probar DHT11
+  Serial.print(F("🌡️ DHT11: "));
+  float t = dht.readTemperature();
+  float h = dht.readHumidity();
+  
+  if(isnan(h) || isnan(t)) {
+    Serial.println(F("❌ Sin respuesta (verificar pin 3)"));
+  } else {
+    Serial.print(F("✅ OK - "));
+    Serial.print(t);
+    Serial.print(F("°C, "));
+    Serial.print(h);
+    Serial.println(F("%"));
+  }
+  
+  // Probar Ultrasónico
+  Serial.print(F("📏 HC-SR04: "));
+  float dist = leerDistancia();
+  if(dist < 0) {
+    Serial.println(F("❌ Sin respuesta (verificar pins 4/5)"));
+  } else {
+    Serial.print(F("✅ OK - "));
+    Serial.print(dist);
+    Serial.println(F(" cm"));
+  }
+  
+  // Probar sensor de suelo
+  Serial.print(F("🌱 YL-69: "));
+  int suelo = leerHumedadSuelo();
+  Serial.print(F("✅ OK - "));
+  Serial.print(suelo);
+  Serial.println(F("% humedad"));
+  
+  // Probar MQ-135
+  Serial.print(F("💨 MQ-135: "));
+  int gas = leerGasPromedio();
+  Serial.print(F("✅ OK - Valor: "));
+  Serial.println(gas);
+  
+  // Probar buzzer
+  Serial.print(F("🔊 Buzzer: "));
+  digitalWrite(BUZZER_PIN, HIGH);
+  delay(200);
+  digitalWrite(BUZZER_PIN, LOW);
+  Serial.println(F("✅ OK"));
+  
+  Serial.println(F("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"));
+}
+
+// COMANDOS SERIE ADICIONALES (Para depuración)
+void serialEvent() {
+  if (Serial.available()) {
+    String comando = Serial.readStringUntil('\n');
     comando.trim();
-    comando.toUpperCase();
     
-    if (comando.length() == 0) return;
-    
-    // Registrar fuente del comando
-    ultimaFuenteComando = fuente;
-    comandoDesdeApp = (fuente == "WEB_APP");
-    comandoDesdeBluetooth = (fuente == "BLUETOOTH");
-    
-    // Log para depuración
-    Serial.print(F("📨 ["));
-    Serial.print(fuente);
-    Serial.print(F("] Comando: '"));
-    Serial.print(comando);
-    Serial.println(F("'"));
-    
-    // Procesar comandos
-    if (comando == "ON" || comando == "PUMP_ON") {
-        encenderBomba();
+    if(comando == "STATUS") {
+      Serial.println(F("Sistema funcionando correctamente"));
+      Serial.print(F("Referencia gas: "));
+      Serial.println(valorReferencia);
+      Serial.print(F("Uptime: "));
+      Serial.print(millis() / 1000);
+      Serial.println(F(" segundos"));
     }
-    else if (comando == "OFF" || comando == "PUMP_OFF") {
-        apagarBomba();
+    else if(comando == "CALIBRAR") {
+      Serial.println(F("Recalibrando sensor de gas..."));
+      calibrarSensorGas();
     }
-    else if (comando == "STATUS" || comando == "STATE") {
-        if (comandoDesdeBluetooth) {
-            mostrarStatusBluetooth();
-        } else {
-            mostrarStatus();
-        }
+    else if(comando == "TEST") {
+      probarTodosSensores();
     }
-    else if (comando == "TEST" && comandoDesdeApp) {
-        // Solo permitir test desde web app por seguridad
-        testRelay();
+    else if(comando.startsWith("BUZZER")) {
+      Serial.println(F("Probando buzzer 3 segundos..."));
+      unsigned long inicio = millis();
+      while(millis() - inicio < 3000) {
+        digitalWrite(BUZZER_PIN, (millis() % 500) < 250 ? HIGH : LOW);
+      }
+      digitalWrite(BUZZER_PIN, LOW);
+      Serial.println(F("Buzzer test completado"));
     }
-    else if (comando == "HELP" && comandoDesdeBluetooth) {
-        mostrarAyudaBluetooth();
-    }
-    else if (comando == "RESET" && comandoDesdeApp) {
-        // Reset solo desde web app
-        resetearEstadisticas();
-    }
-    else if (comando.length() > 0) {
-        enviarErrorComando(comando, fuente);
-    }
-}
-
-// ===== FUNCIONES DE CONTROL DE BOMBA MEJORADAS =====
-void encenderBomba() {
-    if (!bombaActiva) {
-        bombaActiva = true;
-        tiempoInicioBomba = millis();
-        vecesActivada++;
-        
-        // Activar relay
-        if (RELAY_ACTIVE_HIGH) {
-            digitalWrite(RELAY_PIN, HIGH);
-        } else {
-            digitalWrite(RELAY_PIN, LOW);
-        }
-        
-        // Notificar a ambas conexiones
-        String mensaje = "✅ BOMBA ENCENDIDA por " + ultimaFuenteComando;
-        Serial.println(mensaje);
-        
-        bluetooth.println(F("✅ BOMBA ENCENDIDA"));
-        bluetooth.print(F("Fuente: "));
-        bluetooth.println(ultimaFuenteComando);
-        bluetooth.print(F("Activacion #"));
-        bluetooth.println(vecesActivada);
-        bluetooth.println(F("Tiempo max: 5 minutos"));
-        
-        beep(2); // Confirmación sonora
-        
-    } else {
-        String mensaje = F("⚠️ Bomba ya encendida");
-        Serial.println(mensaje);
-        if (comandoDesdeBluetooth) {
-            bluetooth.println(mensaje);
-        }
-    }
-}
-
-void apagarBomba() {
-    if (bombaActiva) {
-        // Calcular tiempo de funcionamiento
-        unsigned long tiempoFuncionamiento = millis() - tiempoInicioBomba;
-        tiempoTotalFuncionamiento += tiempoFuncionamiento;
-        
-        bombaActiva = false;
-        
-        // Desactivar relay
-        if (RELAY_ACTIVE_HIGH) {
-            digitalWrite(RELAY_PIN, LOW);
-        } else {
-            digitalWrite(RELAY_PIN, HIGH);
-        }
-        
-        // Notificar a ambas conexiones
-        String mensaje = "🛑 BOMBA APAGADA por " + ultimaFuenteComando;
-        Serial.println(mensaje);
-        Serial.print(F("⏱️ Funcionó: "));
-        Serial.print(tiempoFuncionamiento / 1000);
-        Serial.println(F(" seg"));
-        
-        bluetooth.println(F("🛑 BOMBA APAGADA"));
-        bluetooth.print(F("Fuente: "));
-        bluetooth.println(ultimaFuenteComando);
-        bluetooth.print(F("Tiempo: "));
-        bluetooth.print(tiempoFuncionamiento / 1000);
-        bluetooth.println(F(" seg"));
-        
-        beep(1); // Confirmación sonora
-        
-    } else {
-        String mensaje = F("⚠️ Bomba ya apagada");
-        Serial.println(mensaje);
-        if (comandoDesdeBluetooth) {
-            bluetooth.println(mensaje);
-        }
-    }
-}
-
-// ===== BOTÓN DE EMERGENCIA CON NOTIFICACIÓN DUAL =====
-void verificarBotonEmergencia() {
-    bool estadoActual = digitalRead(BOTON_EMERGENCIA);
-    
-    if (estadoActual != botonAnterior) {
-        ultimoDebounce = millis();
-    }
-    
-    if ((millis() - ultimoDebounce) > DEBOUNCE_DELAY) {
-        if (botonAnterior == HIGH && estadoActual == LOW) {
-            if (bombaActiva) {
-                Serial.println(F("🚨 ¡EMERGENCIA FÍSICA ACTIVADA!"));
-                Serial.println(F("🛑 Bomba apagada inmediatamente"));
-                
-                bluetooth.println(F("🚨 EMERGENCIA!"));
-                bluetooth.println(F("Boton fisico presionado"));
-                bluetooth.println(F("Bomba apagada por seguridad"));
-                
-                ultimaFuenteComando = "BOTON_EMERGENCIA";
-                apagarBomba();
-                vecesEmergencia++;
-                
-                // Alarma de emergencia
-                beep(5);
-                
-            } else {
-                Serial.println(F("🚨 Botón emergencia (bomba ya apagada)"));
-                bluetooth.println(F("Boton emergencia OK"));
-                beep(1);
-            }
-        }
-    }
-    
-    botonAnterior = estadoActual;
-}
-
-// ===== ENVÍO DE ESTADO PARA WEB APP (JSON) =====
-void enviarEstadoWebApp() {
-    Serial.print(F("{\"pump_active\":"));
-    Serial.print(bombaActiva ? F("true") : F("false"));
-    Serial.print(F(",\"activations\":"));
-    Serial.print(vecesActivada);
-    Serial.print(F(",\"emergencies\":"));
-    Serial.print(vecesEmergencia);
-    Serial.print(F(",\"total_time\":"));
-    Serial.print(tiempoTotalFuncionamiento / 1000);
-    Serial.print(F(",\"last_command_source\":\""));
-    Serial.print(ultimaFuenteComando);
-    Serial.print(F("\""));
-    
-    if (bombaActiva) {
-        Serial.print(F(",\"current_time\":"));
-        Serial.print((millis() - tiempoInicioBomba) / 1000);
-        Serial.print(F(",\"time_left\":"));
-        Serial.print((TIEMPO_MAXIMO - (millis() - tiempoInicioBomba)) / 1000);
-    }
-    
-    Serial.println(F("}"));
-}
-
-// ===== ENVÍO DE ESTADO PARA BLUETOOTH (LEGIBLE) =====
-void enviarEstadoBluetooth() {
-    bluetooth.println(F("--- ESTADO BOMBA ---"));
-    bluetooth.print(F("Estado: "));
-    bluetooth.println(bombaActiva ? F("ENCENDIDA") : F("APAGADA"));
-    bluetooth.print(F("Activaciones: "));
-    bluetooth.println(vecesActivada);
-    bluetooth.print(F("Emergencias: "));
-    bluetooth.println(vecesEmergencia);
-    bluetooth.print(F("Ultimo comando: "));
-    bluetooth.println(ultimaFuenteComando);
-    
-    if (bombaActiva) {
-        unsigned long tiempoActual = (millis() - tiempoInicioBomba) / 1000;
-        unsigned long tiempoRestante = (TIEMPO_MAXIMO - (millis() - tiempoInicioBomba)) / 1000;
-        
-        bluetooth.print(F("Tiempo activa: "));
-        bluetooth.print(tiempoActual);
-        bluetooth.println(F(" seg"));
-        bluetooth.print(F("Tiempo restante: "));
-        bluetooth.print(tiempoRestante);
-        bluetooth.println(F(" seg"));
-    }
-    
-    bluetooth.println(F("-------------------"));
-}
-
-// ===== MOSTRAR STATUS BLUETOOTH =====
-void mostrarStatusBluetooth() {
-    bluetooth.println(F("====== BOMBA RIEGO ======"));
-    bluetooth.print(F("Estado: "));
-    bluetooth.println(bombaActiva ? F("ON") : F("OFF"));
-    bluetooth.print(F("Pin relay: "));
-    bluetooth.println(digitalRead(RELAY_PIN) ? F("HIGH") : F("LOW"));
-    bluetooth.print(F("Boton emergencia: "));
-    bluetooth.println(digitalRead(BOTON_EMERGENCIA) ? F("OK") : F("PRESIONADO"));
-    bluetooth.print(F("Activaciones: "));
-    bluetooth.println(vecesActivada);
-    bluetooth.print(F("Paradas emergencia: "));
-    bluetooth.println(vecesEmergencia);
-    bluetooth.print(F("Ultimo comando desde: "));
-    bluetooth.println(ultimaFuenteComando);
-    bluetooth.println(F("========================"));
-}
-
-// ===== AYUDA PARA BLUETOOTH =====
-void mostrarAyudaBluetooth() {
-    bluetooth.println(F("====== COMANDOS BOMBA ======"));
-    bluetooth.println(F("ON     - Encender bomba"));
-    bluetooth.println(F("OFF    - Apagar bomba"));
-    bluetooth.println(F("STATUS - Ver estado completo"));
-    bluetooth.println(F("HELP   - Esta ayuda"));
-    bluetooth.println(F(""));
-    bluetooth.println(F("NOTAS:"));
-    bluetooth.println(F("- Tiempo max: 5 minutos"));
-    bluetooth.println(F("- Boton fisico = emergencia"));
-    bluetooth.println(F("- Control dual: App + Movil"));
-    bluetooth.println(F("==========================="));
-}
-
-// ===== FUNCIONES DE UTILIDAD =====
-void forzarBombaOFF() {
-    if (RELAY_ACTIVE_HIGH) {
-        digitalWrite(RELAY_PIN, LOW);
-    } else {
-        digitalWrite(RELAY_PIN, HIGH);
-    }
-}
-
-void verificarTiempoMaximo() {
-    if (bombaActiva && (millis() - tiempoInicioBomba >= TIEMPO_MAXIMO)) {
-        Serial.println(F("⚠️ PROTECCIÓN: Tiempo máximo (5 min)"));
-        bluetooth.println(F("PROTECCION: Tiempo maximo"));
-        bluetooth.println(F("Bomba apagada automaticamente"));
-        
-        ultimaFuenteComando = "PROTECCION_TIEMPO";
-        apagarBomba();
-        beep(5);
-    }
-}
-
-void resetearEstadisticas() {
-    vecesActivada = 0;
-    vecesEmergencia = 0;
-    tiempoTotalFuncionamiento = 0;
-    ultimaFuenteComando = "RESET";
-    
-    Serial.println(F("🔄 Estadísticas reseteadas"));
-}
-
-void enviarErrorComando(String comando, String fuente) {
-    String mensaje = "❓ Comando desconocido: '" + comando + "'";
-    
-    if (fuente == "WEB_APP") {
-        Serial.println(mensaje);
-        Serial.println(F("💡 Comandos: ON, OFF, STATUS, TEST, RESET"));
-    } else {
-        bluetooth.println(F("Comando desconocido"));
-        bluetooth.println(F("Envía HELP para ver comandos"));
-    }
-}
-
-void mostrarStatus() {
-    Serial.println(F("╔════════════ ESTADO DUAL ════════════╗"));
-    Serial.print(F("║ Estado bomba: "));
-    Serial.println(bombaActiva ? F("ENCENDIDA ✅") : F("APAGADA ❌"));
-    Serial.print(F("║ Pin relay: "));
-    Serial.println(digitalRead(RELAY_PIN) ? F("HIGH") : F("LOW"));
-    Serial.print(F("║ Activaciones: "));
-    Serial.println(vecesActivada);
-    Serial.print(F("║ Emergencias: "));
-    Serial.println(vecesEmergencia);
-    Serial.print(F("║ Último comando: "));
-    Serial.println(ultimaFuenteComando);
-    Serial.print(F("║ Control USB: "));
-    Serial.println(F("ACTIVO"));
-    Serial.print(F("║ Control Bluetooth: "));
-    Serial.println(F("ACTIVO"));
-    Serial.println(F("╚════════════════════════════════════╝"));
-}
-
-void testInicial() {
-    Serial.println(F("🔧 TEST SISTEMA DUAL"));
-    bluetooth.println(F("Probando sistema..."));
-    
-    Serial.print(F("Pin relay "));
-    Serial.print(RELAY_PIN);
-    Serial.print(F(": "));
-    Serial.println(digitalRead(RELAY_PIN) ? F("HIGH") : F("LOW"));
-    
-    Serial.print(F("Boton emergencia "));
-    Serial.print(BOTON_EMERGENCIA);
-    Serial.print(F(": "));
-    Serial.println(digitalRead(BOTON_EMERGENCIA) ? F("OK") : F("PRESIONADO"));
-    
-    bluetooth.println(F("Test completado"));
-    Serial.println(F("✅ Test inicial OK"));
-}
-
-void testRelay() {
-    Serial.println(F("🔧 TEST RELAY (solo desde web app)"));
-    
-    bool estadoOriginal = bombaActiva;
-    
-    Serial.println(F("1. Estado OFF"));
-    forzarBombaOFF();
-    delay(2000);
-    
-    Serial.println(F("2. Estado ON (3 seg)"));
-    if (RELAY_ACTIVE_HIGH) {
-        digitalWrite(RELAY_PIN, HIGH);
-    } else {
-        digitalWrite(RELAY_PIN, LOW);
-    }
-    delay(3000);
-    
-    Serial.println(F("3. Regresando a OFF"));
-    forzarBombaOFF();
-    
-    if (estadoOriginal) {
-        encenderBomba();
-    }
-    
-    Serial.println(F("✅ Test relay completado"));
-}
-
-void beep(int cantidad) {
-    for (int i = 0; i < cantidad; i++) {
-        digitalWrite(BUZZER_PIN, HIGH);
-        delay(100);
-        digitalWrite(BUZZER_PIN, LOW);
-        if (i < cantidad - 1) delay(150);
-    }
+  }
 }
