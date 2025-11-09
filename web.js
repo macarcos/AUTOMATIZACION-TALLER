@@ -340,9 +340,9 @@ function evaluateUltrasonicLevel(ultraValue) {
     } else if (ultraValue <= ultrasonicParameters.minimo) {
         return { level: 'danger', message: '¡DESBORDE!', icon: '🔴' };
     } else if (ultraValue <= ultrasonicParameters.regular) {
-        return { level: 'warning', message: 'Nivel regular', icon: '🟡' };
+        return { level: 'warning', message: 'Nivel máximo - Lleno', icon: '🟢' };
     } else if (ultraValue <= ultrasonicParameters.maximo) {
-        return { level: 'normal', message: 'Nivel máximo - Lleno', icon: '🟢' };
+        return { level: 'normal', message: 'Nivel regular', icon: '🟡' };
     } else {
         return { level: 'critical', message: 'Nivel mínimo - Vacío', icon: '⚠️' };
     }
@@ -3295,3 +3295,4 @@ console.log('- shouldUpdateCharts:', shouldUpdateCharts);
 console.log('- chartsInitialized:', chartsInitialized);
 
 console.log('================================================');
+
