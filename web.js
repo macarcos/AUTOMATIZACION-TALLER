@@ -338,13 +338,13 @@ function evaluateUltrasonicLevel(ultraValue) {
     if (ultraValue <= 0) {
         return { level: 'normal', message: 'Sin datos del sensor', icon: '❌' };
     } else if (ultraValue <= ultrasonicParameters.minimo) {
-        return { level: 'danger', message: 'Nivel mínimo - Vacío', icon: '🔴' };
+        return { level: 'danger', message: '¡DESBORDE!', icon: '🔴' };
     } else if (ultraValue <= ultrasonicParameters.regular) {
         return { level: 'warning', message: 'Nivel regular', icon: '🟡' };
     } else if (ultraValue <= ultrasonicParameters.maximo) {
         return { level: 'normal', message: 'Nivel máximo - Lleno', icon: '🟢' };
     } else {
-        return { level: 'critical', message: '¡DESBORDE!', icon: '⚠️' };
+        return { level: 'critical', message: 'Nivel mínimo - Vacío', icon: '⚠️' };
     }
 }
 
@@ -3293,4 +3293,5 @@ console.log('Variables de control:');
 console.log('- noSensorMode:', noSensorMode);
 console.log('- shouldUpdateCharts:', shouldUpdateCharts);
 console.log('- chartsInitialized:', chartsInitialized);
+
 console.log('================================================');
